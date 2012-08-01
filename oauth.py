@@ -48,7 +48,6 @@ from google.appengine.api import urlfetch
 from google.appengine.ext import db
 
 from cgi import parse_qs
-from django.utils import simplejson as json
 from hashlib import sha1
 from hmac import new as hmac
 from random import getrandbits
@@ -59,6 +58,12 @@ from urllib import unquote as urlunquote
 
 import logging
 
+try:
+ import json
+except ImportError, e:
+ from django.utils import simplejson as json
+
+
 
 TWITTER = "twitter"
 YAHOO = "yahoo"
@@ -66,6 +71,7 @@ MYSPACE = "myspace"
 DROPBOX = "dropbox"
 LINKEDIN = "linkedin"
 YAMMER = "yammer"
+EVERNOTE = "evernote"
 
 
 class OAuthException(Exception):
@@ -111,7 +117,7 @@ class AuthToken(db.Model):
 
 
 class OAuthClient():
-
+  
   def __init__(self, service_name, consumer_key, consumer_secret, request_url,
                access_url, callback_url=None):
     """ Constructor."""
@@ -297,11 +303,16 @@ class OAuthClient():
     secret = None
     parsed_results = parse_qs(result.content)
 
+
+
+
     if "oauth_token" in parsed_results:
       token = parsed_results["oauth_token"][0]
+      logging.info("extract token: %s" % token)
 
     if "oauth_token_secret" in parsed_results:
       secret = parsed_results["oauth_token_secret"][0]
+      logging.info("extract secret: %s" % secret)
 
     if not (token and secret) or result.status_code != 200:
       logging.error("Could not extract token/secret: %s" % result.content)
@@ -631,3 +642,99 @@ class YammerClient(OAuthClient):
     user_info["picture"] = data["mugshot_url"]
     user_info["name"] = data["full_name"]
     return user_info
+
+
+class EvernoteClient(OAuthClient):
+  """Evernote Client.
+ 
+  A client for talking to the Evernote API using OAuth as the authentication
+  model.
+  """
+
+  def __init__(self, consumer_key, consumer_secret, callback_url, use_sandbox=True):
+    """Constructor."""
+
+    self.use_sandbox = use_sandbox
+    if(use_sandbox) :
+      OAuthClient.__init__(self,
+        EVERNOTE,
+        consumer_key,
+        consumer_secret,
+        "https://sandbox.evernote.com/oauth",
+        "https://sandbox.evernote.com/oauth",
+        callback_url)
+    else :
+     OAuthClient.__init__(self,
+        EVERNOTE,
+        consumer_key,
+        consumer_secret,
+        "https://www.evernote.com/oauth",
+        "https://www.evernote.com/oauth",
+        callback_url)
+
+  def get_authorization_url(self):
+    """Get Authorization URL."""
+
+    token = self._get_auth_token()
+
+    if self.use_sandbox:
+      return ("https://sandbox.evernote.com/OAuth.action?"
+            "oauth_token=%s&oauth_callback=%s" % (token,
+                                                  urlquote(self.callback_url)))
+    else :
+      return ("https://www.evernote.com/OAuth.action?"
+            "oauth_token=%s&oauth_callback=%s" % (token,
+                                                  urlquote(self.callback_url)))
+
+  def get_user_info(self, auth_token, auth_verifier=""):
+    result = OAuthClient.get_user_info(self, auth_token, auth_verifier);
+
+    result["id"] = result["edam_userId"]
+    del result["edam_userId"]
+    
+    result["shard"] = result["edam_shard"]
+    del result["edam_shard"]
+
+    return result;
+
+  def _lookup_user_info(self, auth_token, auth_verifier=""):
+    return {};
+
+  def _extract_credentials(self, result):
+    """Overrided Extract Credentials. 
+
+    Returns an dictionary containing the token, secret, edam_shard and edam_userId (if present).
+    Throws an Exception if there is no token OR secret.
+    """
+
+    token = None
+    secret = None
+    parsed_results = parse_qs(result.content)
+
+    if "oauth_token" in parsed_results:
+      token = parsed_results["oauth_token"][0]
+
+    if "oauth_token_secret" in parsed_results:
+      secret = parsed_results["oauth_token_secret"][0]
+
+    if not (token or secret) or result.status_code != 200:
+      logging.error("Could not extract token/secret: %s" % result.content)
+      raise OAuthException("Problem talking to the service")
+
+    return_dictionary = {
+      "service": self.service_name,
+      "token": token,
+      "secret": secret
+    }
+
+    if "edam_shard" in parsed_results:
+      return_dictionary["edam_shard"] = parsed_results["edam_shard"][0]
+
+    if "edam_userId" in parsed_results:
+      return_dictionary["edam_userId"] = parsed_results["edam_userId"][0]
+
+    return return_dictionary
+
+
+
+
